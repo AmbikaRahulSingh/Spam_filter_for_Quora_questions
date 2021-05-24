@@ -1,0 +1,178 @@
+# Importing required libraries
+
+import warnings
+warnings.filterwarnings('ignore')
+
+import os
+import time
+import pandas as pd
+import numpy as np
+import math
+
+import tensorflow as tf
+from tensorflow import keras
+from tqdm import tqdm
+
+from sklearn.model_selection import train_test_split
+from sklearn import metrics
+
+import nltk
+nltk.download('punkt')
+from nltk import word_tokenize
+from tensorflow.keras.preprocessing.text import Tokenizer
+from tensorflow.keras.preprocessing import sequence
+from keras.preprocessing.sequence import pad_sequences
+
+from tensorflow.keras.layers import LSTM, Activation, Dense, Dropout, Input, Embedding, Conv1D, SpatialDropout1D, Bidirectional,GlobalMaxPool1D
+from keras import initializers, regularizers, constraints, optimizers, layers
+from tensorflow.keras.models import Model
+
+Glove 840B 300d embeddings
+
+!wget http://nlp.stanford.edu/data/glove.840B.300d.zip
+!unzip glove.840B.300d.zip
+!rm glove.840B.300d.zip
+
+!wget https://www.dropbox.com/sh/kpf9z73woodfssv/AAAwZ5DDt-aHwqZFHYrZ-ZBHa/train.csv
+
+data=pd.read_csv('/content/train.csv')
+
+data.shape
+
+data.isnull().sum()
+
+data.head()
+
+data['target'].value_counts()
+
+train_df, val_df = train_test_split(data, test_size=0.2, random_state=2)
+
+# !rm train.csv
+
+embed_size = 300
+max_features = 50000
+maxlen = 100
+
+train_X = train_df["question_text"].values
+val_X = val_df["question_text"].values
+
+train_y = train_df["target"].values
+val_y = val_df["target"].values
+
+tokenizer = Tokenizer(num_words=max_features)
+tokenizer.fit_on_texts(list(train_X))
+train_X = tokenizer.texts_to_sequences(train_X)
+val_X = tokenizer.texts_to_sequences(val_X)
+
+train_X = pad_sequences(train_X, maxlen=maxlen)
+val_X = pad_sequences(val_X, maxlen=maxlen)
+
+print(train_X.shape, val_X.shape)
+print(train_y.shape, val_y.shape)
+
+EMBEDDING_FILE = "/content/glove.840B.300d.txt"
+
+def get_coefs(word,*arr): return word, np.asarray(arr, dtype='float32')
+
+embeddings_index = dict(get_coefs(*o.split(" ")) for o in open(EMBEDDING_FILE))
+
+all_embs = np.stack(embeddings_index.values())
+emb_mean,emb_std = all_embs.mean(), all_embs.std()
+embed_size = all_embs.shape[1]
+
+word_index = tokenizer.word_index
+nb_words = min(max_features, len(word_index))
+embedding_matrix = np.random.normal(emb_mean, emb_std, (nb_words, embed_size))
+for word, i in word_index.items():
+    if i >= max_features: continue
+    embedding_vector = embeddings_index.get(word)
+    if embedding_vector is not None: embedding_matrix[i] = embedding_vector
+
+# !rm glove.840B.300d.txt
+
+inputs = Input(shape=(maxlen,))
+layer = Embedding(max_features, embed_size,mask_zero=True, weights=[embedding_matrix],trainable=False)(inputs)
+layer = Bidirectional(LSTM(64, return_sequences=True))(layer)
+layer = GlobalMaxPool1D()(layer)
+layer = Dense(16, activation="relu")(layer)
+layer = Dropout(0.1)(layer)
+layer = Dense(1, activation="sigmoid")(layer)
+model = Model(inputs=inputs, outputs=layer)
+model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+print(model.summary())
+
+model.fit(train_X, train_y, batch_size=1000, epochs=1, validation_data=(val_X, val_y))
+
+pred = model.predict([val_X], batch_size=1000, verbose=1)
+
+pred.shape
+
+cutoffs=np.linspace(0.001,0.999,999)
+
+from sklearn.metrics import fbeta_score
+
+fbetas=[]
+
+for cutoff in cutoffs:
+    
+    predicted=(pred>cutoff).astype(int)
+    
+    fbetas.append(fbeta_score(val_y,predicted,2))
+    
+my_cutoff=cutoffs[fbetas==max(fbetas)]
+
+# pred_test_y = model.predict([test_X], batch_size=1024, verbose=1)
+
+# predictions = (pred_test_y>my_cutoff).astype(int)
+
+# pd.Series(predictions).value_counts()
+
+# submission = pd.DataFrame({"qid":val_df["qid"].values})
+
+# submission['prediction'] = predictions
+
+# submission.to_csv(('Ambika_Tupakula_P3.csv', index=False)
+
+# note: preprocessing of test_X...needed before predicting
+
+my_cutoff
+
+pred = (pred>my_cutoff).astype(int)
+
+np.unique(pred,return_counts=True)
+
+pred=pred.astype(int)
+
+from sklearn.metrics import roc_auc_score
+
+score = roc_auc_score(val_y,pred)
+
+score
+
+# Saving the model 
+
+from tensorflow.keras.models import model_from_json
+
+model_json = model.to_json()
+
+with open("model.json", "w") as json_file:
+
+    json_file.write(model_json)
+
+model.save_weights('model_weights.h5',overwrite = True)
+
+
+# loading the model 
+
+from tensorflow.keras.models import model_from_json
+
+json_file = open('model.json', 'r')
+
+loaded_model_json = json_file.read()
+json_file.close()
+
+loaded_model = model_from_json(loaded_model_json)
+
+loaded_model.summary()
+
+loaded_model.load_weights('model_weights.h5')
